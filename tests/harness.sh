@@ -3,7 +3,8 @@
 #
 # Spins a throwaway tmux server on its own socket, drives a real client
 # through a pty (utilising script(1)), and asserts on observable state via
-# list-clients / list-sessions.
+# list-clients / list-sessions. Each phase gets a fresh server so phases
+# cannot contaminate each other.
 #
 # Usage: tests/harness.sh [tmux-binary]
 
@@ -37,9 +38,13 @@ EOF
 clients()  { "$TMUX_BIN" -L "$SOCK" list-clients -F '#{client_session}' 2>/dev/null; }
 sessions() { "$TMUX_BIN" -L "$SOCK" list-sessions -F '#{session_name}' 2>/dev/null; }
 
-"$TMUX_BIN" -L "$SOCK" -f "$CONF" new-session -d -s main
+start_server() {
+    "$TMUX_BIN" -L "$SOCK" kill-server 2>/dev/null
+    "$TMUX_BIN" -L "$SOCK" -f "$CONF" new-session -d -s main
+}
 
 # ── phase 1: toggle open, toggle close, session persists ──────────────────
+start_server
 ( sleep 1; printf '\001p'; sleep 2.5; printf '\001p'; sleep 1.5 ) | \
     script -q /dev/null "$TMUX_BIN" -L "$SOCK" attach -t main >"$LOG" 2>&1 &
 
@@ -53,7 +58,8 @@ sessions | grep -qx perch && ok "session persists after close" || bad "session p
 sleep 2
 
 # ── phase 2: menu full-screen must re-open the popup (floax regression) ───
-( sleep 1; printf '\001p'; sleep 2; printf '\001P'; sleep 1.2; printf 'f'; sleep 2.5 ) | \
+start_server
+( sleep 1; printf '\001p'; sleep 2; printf '\001P'; sleep 1.2; printf 'f'; sleep 2.5; printf '\001p'; sleep 1.5 ) | \
     script -q /dev/null "$TMUX_BIN" -L "$SOCK" attach -t main >"$LOG" 2>&1 &
 
 sleep 1.8
@@ -61,6 +67,22 @@ clients | grep -qx perch && ok "float open before menu" || bad "float open befor
 
 sleep 3.8
 clients | grep -qx perch && ok "menu full-screen re-opens the popup" || bad "menu full-screen re-opens the popup"
+
+sleep 3.0
+clients | grep -qx perch && bad "float closes after menu reopen" || ok "float closes after menu reopen"
+
+# ── phase 3: held-Ctrl chord (C-a C-p) must toggle too ────────────────────
+# Typing "prefix then p" with Ctrl held down delivers Ctrl+P; the shim
+# registers that variant, so the float must close on either chord.
+start_server
+( sleep 1; printf '\001p'; sleep 2.2; printf '\001\020'; sleep 2 ) | \
+    script -q /dev/null "$TMUX_BIN" -L "$SOCK" attach -t main >"$LOG" 2>&1 &
+
+sleep 1.8
+clients | grep -qx perch && ok "float opens (held-Ctrl phase)" || bad "float opens (held-Ctrl phase)"
+
+sleep 2.8
+clients | grep -qx perch && bad "held-Ctrl chord (C-a C-p) toggles the float" || ok "held-Ctrl chord (C-a C-p) toggles the float"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

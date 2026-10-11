@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # perch.tmux — TPM / run-shell entry point.
 #
-# Registers the two prefix bindings (toggle + menu) and nothing else. Always
-# exits 0 so a config reload never surfaces a noisy "returned 1" message.
+# Registers the prefix bindings (toggle + menu, plus their Ctrl-variants) and
+# nothing else. Always exits 0 so a config reload never surfaces a noisy
+# "returned 1" message.
 
 set -u
 
@@ -24,7 +25,27 @@ if [ -z "$menu_key" ]; then
     menu_key="P"
 fi
 
-tmux bind-key "$toggle_key" run-shell "python3 '$PERCH' toggle"
-tmux bind-key "$menu_key" run-shell "python3 '$PERCH' menu"
+bind_ctrl="$(tmux show-option -gqv @perch-bind-ctrl)"
+if [ -z "$bind_ctrl" ]; then
+    bind_ctrl="on"
+fi
+
+bind_key() {
+    local key="$1" action="$2"
+    [ -n "$key" ] || return 0
+    tmux bind-key "$key" run-shell "python3 '$PERCH' $action"
+    # Hold-Ctrl friendliness: pressing "prefix then p" with Ctrl held down
+    # delivers Ctrl+P, which tmux-sensible binds to previous-window. Also
+    # register the Ctrl-variant of single-character keys so the chord works
+    # whether or not Ctrl is released between the two keys.
+    if [ "$bind_ctrl" = "on" ]; then
+        case "$key" in
+            ?) tmux bind-key "C-$key" run-shell "python3 '$PERCH' $action" ;;
+        esac
+    fi
+}
+
+bind_key "$toggle_key" toggle
+bind_key "$menu_key" menu
 
 exit 0

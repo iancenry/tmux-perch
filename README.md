@@ -34,6 +34,8 @@ Then reload (`prefix + r`) or restart tmux.
 
 - `prefix + p` — toggle the float
 - `prefix + P` — menu: size down/up, full screen, reset size, close
+- inside the float it is a normal session: `prefix %` / `prefix "` split panes,
+  and everything in it persists across hiding/showing
 
 ## Options
 
@@ -41,6 +43,7 @@ Then reload (`prefix + r`) or restart tmux.
 | ------ | ------- | ------- |
 | `@perch-bind` | `p` | prefix key that toggles the float |
 | `@perch-bind-menu` | `P` | prefix key that opens the menu |
+| `@perch-bind-ctrl` | `on` | also bind the Ctrl-variant (e.g. `C-p`) of single-char keys — holding Ctrl through the chord still toggles. Takes `C-p` from `previous-window` (tmux-sensible); set `off` to keep the stock binding. |
 | `@perch-session` | `perch` | name of the persistent scratch session |
 | `@perch-width` / `@perch-height` | `80%` | default float size (percent or cells) |
 | `@perch-border-color` | `magenta` | popup border colour |
@@ -65,6 +68,10 @@ Then reload (`prefix + r`) or restart tmux.
   outer client explicitly (upstream floax PR #70 fixes the same bug).
 - **Safe path following.** `cd` is only typed when the scratch pane's
   foreground is a shell — never into a running TUI.
+- **Hold-Ctrl chords work.** Toggle/menu keys are also registered on their
+  Ctrl-variant (`C-p`), because holding Ctrl through the chord delivers
+  Ctrl+P — which tmux-sensible maps to `previous-window` ("No previous
+  window" if the session has one window).
 - **Quiet on success.** The load shim always exits 0; successful runs print
   nothing.
 
