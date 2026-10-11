@@ -23,6 +23,11 @@ With TPM:
 set -g @plugin 'iancenry/tmux-perch'
 ```
 
+Put any `@perch-*` option lines **above** the
+`run '~/.tmux/plugins/tpm/tpm'` line — tpm executes the plugin shim right
+there, and the shim reads the options at load time (options set *after* the
+tpm line are ignored and the built-in defaults apply).
+
 Then `prefix + I` to install.
 
 From a manual checkout:
