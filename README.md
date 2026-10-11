@@ -79,6 +79,15 @@ Spins a throwaway tmux server, drives a real client through a pty with
 persists, and the menu full-screen re-opens the popup (the floax
 regression).
 
+For hands-on testing, run the playground from a fresh terminal (not inside
+tmux) — it starts a throwaway server with perch loaded:
+
+```sh
+tests/play.sh
+```
+
+Then `Ctrl-b p` toggles the float and `Ctrl-b P` opens the menu.
+
 ## License
 
 Not set yet — add one before publishing.
