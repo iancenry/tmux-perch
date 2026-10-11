@@ -55,6 +55,7 @@ Then reload (`prefix + r`) or restart tmux.
 | `@perch-change-path` | `on` | follow the current pane's directory (shells only) |
 | `@perch-hotkeys` | `off` | opt-in `C-M-s/b/f/r` root-table resize keys (needs a terminal with option-as-meta) |
 | `@perch-title` | auto | custom popup title |
+| `@perch-icon` | 🐦 | icon shown before the float label in the title (set empty to disable) |
 
 ## Design notes (scars included)
 
@@ -80,6 +81,10 @@ Then reload (`prefix + r`) or restart tmux.
   its own float (`perch-<session>`), marked via the `@perch-float-base`
   session option, so "am I inside a float?" is answered precisely rather
   than by name-matching. Orphaned floats are collected lazily on toggle.
+- **Project label in the title.** The float title shows the git repo (or
+  directory) name of where you triggered it, e.g. `🐦 dotfiles` — display
+  only; session identity remains `perch-<session>` since project names are
+  not unique and may contain characters illegal in session names.
 - **Quiet on success.** The load shim always exits 0; successful runs print
   nothing.
 

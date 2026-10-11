@@ -48,7 +48,7 @@ start_server() {
         "$TMUX_BIN" -L "$SOCK" has-session 2>/dev/null || break
         sleep 0.2
     done
-    "$TMUX_BIN" -L "$SOCK" -f "$conf" new-session -d -s main
+    "$TMUX_BIN" -L "$SOCK" -f "$conf" new-session -d -s main -c "$HERE"
 }
 
 # ── phase 1: toggle open, toggle close, session persists ──────────────────
@@ -102,6 +102,8 @@ start_server "$CONF_PS"
 
 sleep 2.5
 clients | grep -qx perch-main && ok "per-session: 'main' gets its own float" || bad "per-session: 'main' gets its own float"
+label="$("$TMUX_BIN" -L "$SOCK" show-option -t perch-main -qv @perch-float-label)"
+[ "$label" = "$(basename "$HERE")" ] && ok "per-session: project label stored ($label)" || bad "per-session: project label stored (got '$label')"
 
 sleep 2.3
 outer_tty="$("$TMUX_BIN" -L "$SOCK" list-clients -F '#{client_tty} #{client_session}' | awk '$2=="main"{print $1; exit}')"

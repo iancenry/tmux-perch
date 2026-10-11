@@ -76,6 +76,23 @@ def session_option(session: str, name: str) -> str:
     return tmux("show-option", "-t", session, "-qv", name)
 
 
+def project_label(path: str, fallback: str) -> str:
+    """A human label for the float: the git repo root's name when the path
+    is inside a repo, else the directory name, else the fallback."""
+    home = os.path.expanduser("~")
+    probe = os.path.realpath(path) if path else ""
+    base = probe
+    while probe and probe != "/":
+        if os.path.exists(os.path.join(probe, ".git")):
+            base = probe
+            break
+        probe = os.path.dirname(probe)
+    name = os.path.basename(base.rstrip("/")) if base else ""
+    if not name or base == home:
+        return fallback
+    return name
+
+
 FLOAT_NAME = get_opt("@perch-session", "perch")
 PER_SESSION = get_opt("@perch-per-session", "off")
 WIDTH = get_opt("@perch-width", "80%")
@@ -84,6 +101,7 @@ BORDER = get_opt("@perch-border-color", "magenta")
 TEXT = get_opt("@perch-text-color", "default")
 FOLLOW = get_opt("@perch-change-path", "on")
 HOTKEYS = get_opt("@perch-hotkeys", "off")
+ICON = get_opt("@perch-icon", "🐦")
 
 HOTKEY_ACTIONS = {
     "C-M-s": ("zoom", "in"),
@@ -150,7 +168,8 @@ def gc_orphans() -> None:
 
 # ── session lifecycle ──────────────────────────────────────────────────────
 
-def ensure_session(name: str, path: str, base: str | None) -> None:
+def ensure_session(name: str, path: str, base: str | None,
+                   label: str) -> None:
     if not session_exists(name):
         tmux_run("new-session", "-d", "-s", name, "-c",
                  path or os.path.expanduser("~"))
@@ -158,6 +177,7 @@ def ensure_session(name: str, path: str, base: str | None) -> None:
     # If the float session is destroyed (its shell exited), detach instead of
     # letting the client jump into another session.
     tmux_run("set-option", "-t", name, "detach-on-destroy", "on")
+    tmux_run("set-option", "-t", name, "@perch-float-label", label)
     if base is not None:
         tmux_run("set-option", "-t", name, FLOAT_MARKER, base)
 
@@ -175,20 +195,20 @@ def follow_path(name: str, path: str) -> None:
 
 # ── popup ──────────────────────────────────────────────────────────────────
 
-def default_title(base: str | None) -> str:
+def default_title(label: str) -> str:
     prefix = tmux("show-options", "-gv", "prefix")
     menu_key = get_opt("@perch-bind-menu", "P")
-    label = f"perch [{base}]" if base else "perch"
-    return f" {label} │ {prefix} {menu_key}: menu "
+    icon = f"{ICON} " if ICON else ""
+    return f" {icon}{label} │ {prefix} {menu_key}: menu "
 
 
-def open_popup(name: str, base: str | None, target_client: str | None) -> int:
+def open_popup(name: str, label: str, target_client: str | None) -> int:
     """Open the popup. Blocks while it is open; returns the exit status."""
     width = get_opt("@perch-cur-width", WIDTH)
     height = get_opt("@perch-cur-height", HEIGHT)
     title = tmux("show-option", "-gqv", "@perch-title")
     if not title:
-        title = default_title(base)
+        title = default_title(label)
     socket_path = tmux("display", "-p", "#{socket_path}")
 
     attach = "env -u TMUX tmux -S {} attach-session -t {}".format(
@@ -211,10 +231,10 @@ def open_popup(name: str, base: str | None, target_client: str | None) -> int:
     return tmux_run(*args).returncode
 
 
-def open_popup_with_retry(name: str, base: str | None,
+def open_popup_with_retry(name: str, label: str,
                           target_client: str | None) -> None:
     started = time.monotonic()
-    code = open_popup(name, base, target_client)
+    code = open_popup(name, label, target_client)
     failed_fast = time.monotonic() - started < 1.5
     if code == 0 or not failed_fast or not session_exists(name):
         return
@@ -222,7 +242,7 @@ def open_popup_with_retry(name: str, base: str | None,
     # runtime size and try once more.
     unset_opt("@perch-cur-width")
     unset_opt("@perch-cur-height")
-    open_popup(name, base, target_client)
+    open_popup(name, label, target_client)
 
 
 # ── hotkeys (opt-in via @perch-hotkeys on) ─────────────────────────────────
@@ -250,12 +270,13 @@ def toggle() -> None:
         return
 
     path = tmux("display", "-p", "#{pane_current_path}")
+    label = project_label(path, cur)
     set_opt("@perch-origin", cur)
     gc_orphans()
-    ensure_session(name, path, base)
+    ensure_session(name, path, base, label)
     follow_path(name, path)
     bind_hotkeys()
-    open_popup_with_retry(name, base, outer_client(name))
+    open_popup_with_retry(name, label, outer_client(name))
 
 
 def close() -> None:
@@ -286,6 +307,7 @@ def zoom(direction: str) -> None:
     # Capture the outer client BEFORE detaching: the popup's own client is
     # gone afterwards, and a re-open without an explicit target fails.
     target = outer_client(name)
+    label = session_option(name, "@perch-float-label") or base or "perch"
 
     if direction == "full":
         width, height = "100%", "100%"
@@ -299,7 +321,7 @@ def zoom(direction: str) -> None:
     set_opt("@perch-cur-width", width)
     set_opt("@perch-cur-height", height)
     tmux_run("detach-client")
-    open_popup_with_retry(name, base, target)
+    open_popup_with_retry(name, label, target)
 
 
 def menu() -> None:
