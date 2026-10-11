@@ -10,7 +10,8 @@ Two modes:
   * per-session (@perch-per-session on): every base session gets its own
     independent float, named "perch-<session>", marked with the
     @perch-float-base option. Orphaned floats (base session gone) are
-    garbage-collected on the next toggle.
+    garbage-collected on toggle, and immediately when a base session closes
+    (a session-closed hook runs the collector).
 
 Design notes, each paid for in production incidents by predecessor plugins
 (tmux-floax, tmux-floatpane — see README):
@@ -28,7 +29,11 @@ Design notes, each paid for in production incidents by predecessor plugins
   (`popup -c <tty>`), because after `detach-client` the popup's own client
   is gone and a blind re-open silently fails (upstream floax PR #70's bug).
 * Path-following only types `cd` when the scratch pane's foreground is a
-  shell; it never injects keystrokes into a running TUI.
+  shell; it never injects keystrokes into a running TUI, and the path is
+  shell-quoted so awkward directory names cannot break the command.
+* Every tmux CLI call has a timeout except the two that block by design
+  (`popup` until the float is dismissed, `menu` until an item is chosen);
+  a stray hang must never park a perch process.
 
 Requires python3 and tmux >= 3.3.
 """
@@ -48,28 +53,38 @@ SHELLS = ("zsh", "bash", "sh", "fish", "nu")
 
 FLOAT_MARKER = "@perch-float-base"
 
+_OPT_CACHE: dict[str, str] = {}
+
 
 # ── tmux plumbing ──────────────────────────────────────────────────────────
 
-def tmux_run(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["tmux", *args], capture_output=True, text=True)
+def tmux_run(*args: str, timeout: float | None = 10) -> subprocess.CompletedProcess:
+    # timeout=None is required for commands that block until dismissed
+    # (`popup`, `menu`): a fixed timeout would close them mid-use.
+    return subprocess.run(["tmux", *args], capture_output=True, text=True,
+                          timeout=timeout)
 
 
 def tmux(*args: str) -> str:
     return tmux_run(*args).stdout.strip()
 
 
-def get_opt(name: str, default: str) -> str:
-    value = tmux("show-option", "-gqv", name)
-    return value if value else default
+def opt(name: str, default: str) -> str:
+    """Read a global user option once per process."""
+    if name not in _OPT_CACHE:
+        value = tmux("show-option", "-gqv", name)
+        _OPT_CACHE[name] = value if value else default
+    return _OPT_CACHE[name]
 
 
 def set_opt(name: str, value: str) -> None:
     tmux_run("set-option", "-gq", name, value)
+    _OPT_CACHE[name] = value
 
 
 def unset_opt(name: str) -> None:
     tmux_run("set-option", "-guq", name)
+    _OPT_CACHE.pop(name, None)
 
 
 def session_option(session: str, name: str) -> str:
@@ -92,16 +107,6 @@ def project_label(path: str, fallback: str) -> str:
         return fallback
     return name
 
-
-FLOAT_NAME = get_opt("@perch-session", "perch")
-PER_SESSION = get_opt("@perch-per-session", "off")
-WIDTH = get_opt("@perch-width", "80%")
-HEIGHT = get_opt("@perch-height", "80%")
-BORDER = get_opt("@perch-border-color", "magenta")
-TEXT = get_opt("@perch-text-color", "default")
-FOLLOW = get_opt("@perch-change-path", "on")
-HOTKEYS = get_opt("@perch-hotkeys", "off")
-ICON = get_opt("@perch-icon", "🐦")
 
 HOTKEY_ACTIONS = {
     "C-M-s": ("zoom", "in"),
@@ -172,14 +177,17 @@ def outer_of_float(float_name: str) -> str | None:
 # ── float resolution (shared vs per-session) ───────────────────────────────
 
 def float_for(base: str) -> str:
-    return f"{FLOAT_NAME}-{base}"
+    return f"{opt('@perch-session', 'perch')}-{base}"
 
 
-def float_context(tty: str | None = None) -> tuple[str, str | None, bool]:
+def float_context(tty: str | None = None,
+                  cur: str | None = None) -> tuple[str, str | None, bool]:
     """(float session name, base session, already inside the float)."""
-    cur = current_session(tty)
-    if PER_SESSION != "on":
-        return FLOAT_NAME, None, cur == FLOAT_NAME
+    if cur is None:
+        cur = current_session(tty)
+    if opt("@perch-per-session", "off") != "on":
+        name = opt("@perch-session", "perch")
+        return name, None, cur == name
     base = session_option(cur, FLOAT_MARKER)
     if base:
         return cur, base, True
@@ -188,11 +196,16 @@ def float_context(tty: str | None = None) -> tuple[str, str | None, bool]:
 
 def gc_orphans() -> None:
     """Kill per-session floats whose base session no longer exists."""
-    if PER_SESSION != "on":
+    if opt("@perch-per-session", "off") != "on":
         return
-    names = tmux("list-sessions", "-F", "#{session_name}").splitlines()
-    for name in names:
-        base = session_option(name, FLOAT_MARKER)
+    # One call: session name + marker for every session. Both names must be
+    # wrapped as #{...} — a raw marker string would be parsed as a session
+    # name and the GC would "collect" every session it sees.
+    listing = tmux("list-sessions", "-F",
+                   f"#{{session_name}}|#{{{FLOAT_MARKER}}}")
+    entries = [line.split("|", 1) for line in listing.splitlines() if line]
+    names = {name for name, _ in entries}
+    for name, base in entries:
         if base and base not in names:
             tmux_run("kill-session", "-t", name)
 
@@ -204,39 +217,46 @@ def ensure_session(name: str, path: str, base: str | None,
     if not session_exists(name):
         tmux_run("new-session", "-d", "-s", name, "-c",
                  path or os.path.expanduser("~"))
-    tmux_run("set-option", "-t", name, "status", "off")
-    # If the float session is destroyed (its shell exited), detach instead of
-    # letting the client jump into another session.
-    tmux_run("set-option", "-t", name, "detach-on-destroy", "on")
-    tmux_run("set-option", "-t", name, "@perch-float-label", label)
+    # One tmux invocation covers all of the session setup.
+    setup = [
+        "set-option", "-t", name, "status", "off", ";",
+        # If the float session is destroyed (its shell exited), detach
+        # instead of letting the client jump into another session.
+        "set-option", "-t", name, "detach-on-destroy", "on", ";",
+        "set-option", "-t", name, "@perch-float-label", label,
+    ]
     if base is not None:
-        tmux_run("set-option", "-t", name, FLOAT_MARKER, base)
+        setup += [";", "set-option", "-t", name, FLOAT_MARKER, base]
+    tmux_run(*setup)
 
 
 def follow_path(name: str, path: str) -> None:
-    if FOLLOW != "on" or not path:
+    if opt("@perch-change-path", "on") != "on" or not path:
         return
     if tmux("display", "-t", name, "-p", "#{pane_current_path}") == path:
         return
     foreground = tmux("display", "-t", name, "-p", "#{pane_current_command}")
     if foreground not in SHELLS:
         return  # a TUI is in front; do not type into it
-    tmux_run("send-keys", "-t", name, "-R", f' cd "{path}"', "C-m")
+    # shlex.quote: the path is typed into the user's shell, so it must be
+    # safe even for directory names containing quotes, $ or backticks.
+    tmux_run("send-keys", "-t", name, "-R", f" cd {shlex.quote(path)}", "C-m")
 
 
 # ── popup ──────────────────────────────────────────────────────────────────
 
 def default_title(label: str) -> str:
     prefix = tmux("show-options", "-gv", "prefix")
-    menu_key = get_opt("@perch-bind-menu", "P")
-    icon = f"{ICON} " if ICON else ""
+    menu_key = opt("@perch-bind-menu", "P")
+    icon_name = opt("@perch-icon", "🐦")
+    icon = f"{icon_name} " if icon_name else ""
     return f" {icon}{label} │ {prefix} {menu_key}: menu "
 
 
 def open_popup(name: str, label: str, target_client: str | None) -> int:
-    """Open the popup. Blocks while it is open; returns the exit status."""
-    width = get_opt("@perch-cur-width", WIDTH)
-    height = get_opt("@perch-cur-height", HEIGHT)
+    """Open the popup. Blocks until it is dismissed; returns the exit code."""
+    width = opt("@perch-cur-width", "") or opt("@perch-width", "80%")
+    height = opt("@perch-cur-height", "") or opt("@perch-height", "80%")
     title = tmux("show-option", "-gqv", "@perch-title")
     if not title:
         title = default_title(label)
@@ -248,8 +268,8 @@ def open_popup(name: str, label: str, target_client: str | None) -> int:
 
     args = [
         "popup",
-        "-S", f"fg={BORDER}",
-        "-s", f"fg={TEXT}",
+        "-S", f"fg={opt('@perch-border-color', 'magenta')}",
+        "-s", f"fg={opt('@perch-text-color', 'default')}",
         "-T", title,
         "-w", width,
         "-h", height,
@@ -259,7 +279,8 @@ def open_popup(name: str, label: str, target_client: str | None) -> int:
     if target_client:
         args += ["-c", target_client]
     args.append(attach)
-    return tmux_run(*args).returncode
+    # timeout=None: this call blocks for the whole time the float is open.
+    return tmux_run(*args, timeout=None).returncode
 
 
 def open_popup_with_retry(name: str, label: str,
@@ -279,15 +300,23 @@ def open_popup_with_retry(name: str, label: str,
 # ── hotkeys (opt-in via @perch-hotkeys on) ─────────────────────────────────
 
 def bind_hotkeys() -> None:
-    if HOTKEYS != "on":
+    if opt("@perch-hotkeys", "off") != "on":
         return
-    for key, args in HOTKEY_ACTIONS.items():
-        tmux_run("bind-key", "-n", key, "run-shell", script_cmd_tty(*args))
+    args: list[str] = []
+    for key, action in HOTKEY_ACTIONS.items():
+        if args:
+            args.append(";")
+        args += ["bind-key", "-n", key, "run-shell", script_cmd_tty(*action)]
+    tmux_run(*args)
 
 
 def unbind_hotkeys() -> None:
+    args: list[str] = []
     for key in (*HOTKEY_ACTIONS, "C-M-u"):
-        tmux_run("unbind-key", "-q", "-n", key)
+        if args:
+            args.append(";")
+        args += ["unbind-key", "-q", "-n", key]
+    tmux_run(*args)
 
 
 # ── commands ───────────────────────────────────────────────────────────────
@@ -300,14 +329,15 @@ def detach_current(tty: str | None) -> None:
 
 
 def toggle(tty: str | None = None) -> None:
-    cur = current_session(tty)
-    name, base, inside = float_context(tty)
+    # One call gives both the session and the pane path for the context.
+    info = display_for(tty, "#{session_name}|#{pane_current_path}")
+    cur, _, path = info.partition("|")
+    name, base, inside = float_context(tty, cur)
     if inside:
         unbind_hotkeys()
         detach_current(tty)
         return
 
-    path = display_for(tty, "#{pane_current_path}")
     label = project_label(path, cur)
     set_opt("@perch-origin", cur)
     gc_orphans()
@@ -327,10 +357,9 @@ def close(tty: str | None = None) -> None:
 def step_percent(value: str, delta: int) -> str:
     number = value[:-1] if value.endswith("%") else value
     if not number.isdigit():
-        base = WIDTH[:-1] if WIDTH.endswith("%") else ""
+        base = opt("@perch-width", "80%").rstrip("%")
         number = base if base.isdigit() else "80"
-    n = max(20, min(100, int(number) + delta))
-    return f"{n}%"
+    return f"{max(20, min(100, int(number) + delta))}%"
 
 
 def zoom(direction: str, tty: str | None = None) -> None:
@@ -350,11 +379,14 @@ def zoom(direction: str, tty: str | None = None) -> None:
     if direction == "full":
         width, height = "100%", "100%"
     elif direction == "reset":
-        width, height = WIDTH, HEIGHT
+        width = opt("@perch-width", "80%")
+        height = opt("@perch-height", "80%")
     else:  # "in" shrinks (menu: size down), "out" grows (size up)
         delta = -5 if direction == "in" else 5
-        width = step_percent(get_opt("@perch-cur-width", WIDTH), delta)
-        height = step_percent(get_opt("@perch-cur-height", HEIGHT), delta)
+        cur_w = opt("@perch-cur-width", "") or opt("@perch-width", "80%")
+        cur_h = opt("@perch-cur-height", "") or opt("@perch-height", "80%")
+        width = step_percent(cur_w, delta)
+        height = step_percent(cur_h, delta)
 
     set_opt("@perch-cur-width", width)
     set_opt("@perch-cur-height", height)
@@ -376,7 +408,8 @@ def menu(tty: str | None = None) -> None:
         items = [
             "open float", "o", f'run-shell "{script_cmd_tty("toggle")}"',
         ]
-    tmux_run("menu", "-T", " perch ", *items)
+    # timeout=None: blocks until an item is chosen or the menu is dismissed.
+    tmux_run("menu", "-T", " perch ", *items, timeout=None)
 
 
 def main(argv: list[str]) -> int:
