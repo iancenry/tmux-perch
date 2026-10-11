@@ -12,20 +12,23 @@ useful reference for what a hardened fork looks like.
 ## Requirements
 
 - tmux >= 3.3
-- python3 (stdlib only)
+- python3 (stdlib only — macOS Command Line Tools provide `/usr/bin/python3`,
+  `brew install python` works too)
 
 ## Install
 
-With TPM (once hosted on a git remote):
+With TPM:
 
 ```tmux
-set -g @plugin 'you/tmux-perch'
+set -g @plugin 'iancenry/tmux-perch'
 ```
 
-Manual, from this checkout:
+Then `prefix + I` to install.
+
+From a manual checkout:
 
 ```tmux
-run-shell '/Users/iancenry/Desktop/projects/personal/tmux-perch/perch.tmux'
+run-shell '~/path/to/tmux-perch/perch.tmux'
 ```
 
 Then reload (`prefix + r`) or restart tmux.
@@ -97,4 +100,4 @@ Then `Ctrl-b p` toggles the float and `Ctrl-b P` opens the menu.
 
 ## License
 
-Not set yet — add one before publishing.
+MIT — see [LICENSE](LICENSE).
