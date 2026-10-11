@@ -206,7 +206,9 @@ def gc_orphans() -> None:
     entries = [line.split("|", 1) for line in listing.splitlines() if line]
     names = {name for name, _ in entries}
     for name, base in entries:
-        if base and base not in names:
+        if base and base not in names and not session_exists(base):
+            # Re-check immediately before killing: the base may have been
+            # recreated between the listing and now.
             tmux_run("kill-session", "-t", name)
 
 
@@ -332,6 +334,10 @@ def toggle(tty: str | None = None) -> None:
     # One call gives both the session and the pane path for the context.
     info = display_for(tty, "#{session_name}|#{pane_current_path}")
     cur, _, path = info.partition("|")
+    if not cur:
+        # No client context at all; bail out instead of creating junk
+        # sessions like "perch-" for a nonexistent base.
+        return
     name, base, inside = float_context(tty, cur)
     if inside:
         unbind_hotkeys()

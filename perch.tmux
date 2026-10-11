@@ -30,6 +30,13 @@ if [ -z "$PERCH_CMD" ]; then
     fi
 fi
 
+# tmux >= 3.3 is required (popups). Fail with a message on older versions
+# instead of silently breaking on every keypress.
+if ! tmux list-commands display-popup >/dev/null 2>&1; then
+    tmux display-message "perch: tmux >= 3.3 is required"
+    exit 0
+fi
+
 toggle_key="$(tmux show-option -gqv @perch-bind)"
 if [ -z "$toggle_key" ]; then
     toggle_key="p"

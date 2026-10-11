@@ -38,7 +38,7 @@ when present and falls back to `python3 perch.py` otherwise. Force either
 with `PERCH_IMPL=go` / `PERCH_IMPL=python`.
 
 ```sh
-go build -o bin/perch .
+go build -ldflags="-s -w" -o bin/perch .
 ```
 
 From a manual checkout:

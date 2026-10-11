@@ -241,7 +241,9 @@ func gcOrphans() {
 		entries = append(entries, entry{name, base})
 	}
 	for _, e := range entries {
-		if e.base != "" && !names[e.base] {
+		if e.base != "" && !names[e.base] && !sessionExists(e.base) {
+			// Re-check the base immediately before killing: it may have
+			// been recreated between the listing and now.
 			tmuxStr("kill-session", "-t", e.name)
 		}
 	}
@@ -407,6 +409,12 @@ func toggle(tty string) {
 	// One call gives both the session and the pane path for the context.
 	info := displayFor(tty, "#{session_name}|#{pane_current_path}")
 	cur, path, _ := strings.Cut(info, "|")
+	if cur == "" {
+		// No client context at all (invoked without an attached client and
+		// no MRU client). Opening a float for a nonexistent base would
+		// create junk sessions like "perch-"; bail out instead.
+		return
+	}
 	name, base, inside := floatContext(tty, cur)
 	if inside {
 		unbindHotkeys()
