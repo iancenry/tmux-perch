@@ -12,7 +12,8 @@ useful reference for what a hardened fork looks like.
 ## Requirements
 
 - tmux >= 3.3
-- python3 (stdlib only — macOS Command Line Tools provide `/usr/bin/python3`,
+- either the compiled binary (`bin/perch`, no runtime dependencies), or
+  python3 (stdlib only — macOS Command Line Tools provide `/usr/bin/python3`,
   `brew install python` works too)
 
 ## Install
@@ -29,6 +30,16 @@ there, and the shim reads the options at load time (options set *after* the
 tpm line are ignored and the built-in defaults apply).
 
 Then `prefix + I` to install.
+
+## Building
+
+`main.go` is the preferred implementation; the plugin shim uses `bin/perch`
+when present and falls back to `python3 perch.py` otherwise. Force either
+with `PERCH_IMPL=go` / `PERCH_IMPL=python`.
+
+```sh
+go build -o bin/perch .
+```
 
 From a manual checkout:
 
