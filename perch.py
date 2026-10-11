@@ -5,6 +5,13 @@ One key toggles a popup attached to a persistent scratch session. The popup
 is only a view; closing it leaves the session (and anything running in it)
 untouched.
 
+Two modes:
+  * shared (default): one "perch" session serves the whole tmux server.
+  * per-session (@perch-per-session on): every base session gets its own
+    independent float, named "perch-<session>", marked with the
+    @perch-float-base option. Orphaned floats (base session gone) are
+    garbage-collected on the next toggle.
+
 Design notes, each paid for in production incidents by predecessor plugins
 (tmux-floax, tmux-floatpane — see README):
 
@@ -39,6 +46,8 @@ SELF = os.path.realpath(__file__)
 
 SHELLS = ("zsh", "bash", "sh", "fish", "nu")
 
+FLOAT_MARKER = "@perch-float-base"
+
 
 # ── tmux plumbing ──────────────────────────────────────────────────────────
 
@@ -63,7 +72,12 @@ def unset_opt(name: str) -> None:
     tmux_run("set-option", "-guq", name)
 
 
-SESSION = get_opt("@perch-session", "perch")
+def session_option(session: str, name: str) -> str:
+    return tmux("show-option", "-t", session, "-qv", name)
+
+
+FLOAT_NAME = get_opt("@perch-session", "perch")
+PER_SESSION = get_opt("@perch-per-session", "off")
 WIDTH = get_opt("@perch-width", "80%")
 HEIGHT = get_opt("@perch-height", "80%")
 BORDER = get_opt("@perch-border-color", "magenta")
@@ -92,62 +106,93 @@ def current_session() -> str:
     return tmux("display", "-p", "#{session_name}")
 
 
-def session_exists() -> bool:
-    return tmux_run("has-session", "-t", SESSION).returncode == 0
+def session_exists(name: str) -> bool:
+    return tmux_run("has-session", "-t", name).returncode == 0
 
 
-def outer_client() -> str | None:
-    """The attached client that is NOT showing the perch session."""
+def outer_client(float_name: str) -> str | None:
+    """The attached client that is NOT showing the given float."""
     listing = tmux("list-clients", "-F", "#{client_tty} #{client_session}")
     for line in listing.splitlines():
         parts = line.split()
-        if len(parts) == 2 and parts[1] != SESSION:
+        if len(parts) == 2 and parts[1] != float_name:
             return parts[0]
     return None
 
 
+# ── float resolution (shared vs per-session) ───────────────────────────────
+
+def float_for(base: str) -> str:
+    return f"{FLOAT_NAME}-{base}"
+
+
+def float_context() -> tuple[str, str | None, bool]:
+    """(float session name, base session, already inside the float)."""
+    cur = current_session()
+    if PER_SESSION != "on":
+        return FLOAT_NAME, None, cur == FLOAT_NAME
+    base = session_option(cur, FLOAT_MARKER)
+    if base:
+        return cur, base, True
+    return float_for(cur), cur, False
+
+
+def gc_orphans() -> None:
+    """Kill per-session floats whose base session no longer exists."""
+    if PER_SESSION != "on":
+        return
+    names = tmux("list-sessions", "-F", "#{session_name}").splitlines()
+    for name in names:
+        base = session_option(name, FLOAT_MARKER)
+        if base and base not in names:
+            tmux_run("kill-session", "-t", name)
+
+
 # ── session lifecycle ──────────────────────────────────────────────────────
 
-def ensure_session(path: str) -> None:
-    if not session_exists():
-        tmux_run("new-session", "-d", "-s", SESSION, "-c",
+def ensure_session(name: str, path: str, base: str | None) -> None:
+    if not session_exists(name):
+        tmux_run("new-session", "-d", "-s", name, "-c",
                  path or os.path.expanduser("~"))
-    tmux_run("set-option", "-t", SESSION, "status", "off")
-    # If the scratch session is destroyed (its shell exited), detach instead
-    # of letting the client jump into another session.
-    tmux_run("set-option", "-t", SESSION, "detach-on-destroy", "on")
+    tmux_run("set-option", "-t", name, "status", "off")
+    # If the float session is destroyed (its shell exited), detach instead of
+    # letting the client jump into another session.
+    tmux_run("set-option", "-t", name, "detach-on-destroy", "on")
+    if base is not None:
+        tmux_run("set-option", "-t", name, FLOAT_MARKER, base)
 
 
-def follow_path(path: str) -> None:
+def follow_path(name: str, path: str) -> None:
     if FOLLOW != "on" or not path:
         return
-    if tmux("display", "-t", SESSION, "-p", "#{pane_current_path}") == path:
+    if tmux("display", "-t", name, "-p", "#{pane_current_path}") == path:
         return
-    foreground = tmux("display", "-t", SESSION, "-p", "#{pane_current_command}")
+    foreground = tmux("display", "-t", name, "-p", "#{pane_current_command}")
     if foreground not in SHELLS:
         return  # a TUI is in front; do not type into it
-    tmux_run("send-keys", "-t", SESSION, "-R", f' cd "{path}"', "C-m")
+    tmux_run("send-keys", "-t", name, "-R", f' cd "{path}"', "C-m")
 
 
 # ── popup ──────────────────────────────────────────────────────────────────
 
-def default_title() -> str:
+def default_title(base: str | None) -> str:
     prefix = tmux("show-options", "-gv", "prefix")
     menu_key = get_opt("@perch-bind-menu", "P")
-    return f" perch │ {prefix} {menu_key}: menu "
+    label = f"perch [{base}]" if base else "perch"
+    return f" {label} │ {prefix} {menu_key}: menu "
 
 
-def open_popup(target_client: str | None) -> int:
+def open_popup(name: str, base: str | None, target_client: str | None) -> int:
     """Open the popup. Blocks while it is open; returns the exit status."""
     width = get_opt("@perch-cur-width", WIDTH)
     height = get_opt("@perch-cur-height", HEIGHT)
     title = tmux("show-option", "-gqv", "@perch-title")
     if not title:
-        title = default_title()
+        title = default_title(base)
     socket_path = tmux("display", "-p", "#{socket_path}")
 
     attach = "env -u TMUX tmux -S {} attach-session -t {}".format(
-        shlex.quote(socket_path), shlex.quote(SESSION)
+        shlex.quote(socket_path), shlex.quote(name)
     )
 
     args = [
@@ -166,17 +211,18 @@ def open_popup(target_client: str | None) -> int:
     return tmux_run(*args).returncode
 
 
-def open_popup_with_retry(target_client: str | None) -> None:
+def open_popup_with_retry(name: str, base: str | None,
+                          target_client: str | None) -> None:
     started = time.monotonic()
-    code = open_popup(target_client)
+    code = open_popup(name, base, target_client)
     failed_fast = time.monotonic() - started < 1.5
-    if code == 0 or not failed_fast or not session_exists():
+    if code == 0 or not failed_fast or not session_exists(name):
         return
     # The popup could not open (typically a stale runtime size). Reset the
     # runtime size and try once more.
     unset_opt("@perch-cur-width")
     unset_opt("@perch-cur-height")
-    open_popup(target_client)
+    open_popup(name, base, target_client)
 
 
 # ── hotkeys (opt-in via @perch-hotkeys on) ─────────────────────────────────
@@ -196,22 +242,25 @@ def unbind_hotkeys() -> None:
 # ── commands ───────────────────────────────────────────────────────────────
 
 def toggle() -> None:
-    if current_session() == SESSION:
+    cur = current_session()
+    name, base, inside = float_context()
+    if inside:
         unbind_hotkeys()
         tmux_run("detach-client")
         return
 
-    origin = current_session()
     path = tmux("display", "-p", "#{pane_current_path}")
-    set_opt("@perch-origin", origin)
-    ensure_session(path)
-    follow_path(path)
+    set_opt("@perch-origin", cur)
+    gc_orphans()
+    ensure_session(name, path, base)
+    follow_path(name, path)
     bind_hotkeys()
-    open_popup_with_retry(outer_client())
+    open_popup_with_retry(name, base, outer_client(name))
 
 
 def close() -> None:
-    if current_session() == SESSION:
+    _, _, inside = float_context()
+    if inside:
         unbind_hotkeys()
         tmux_run("detach-client")
 
@@ -229,13 +278,14 @@ def zoom(direction: str) -> None:
     if direction not in ("in", "out", "full", "reset"):
         notify(f"unknown zoom direction: {direction}")
         return
-    if current_session() != SESSION:
+    name, base, inside = float_context()
+    if not inside:
         notify("open the float first")
         return
 
     # Capture the outer client BEFORE detaching: the popup's own client is
     # gone afterwards, and a re-open without an explicit target fails.
-    target = outer_client()
+    target = outer_client(name)
 
     if direction == "full":
         width, height = "100%", "100%"
@@ -249,11 +299,12 @@ def zoom(direction: str) -> None:
     set_opt("@perch-cur-width", width)
     set_opt("@perch-cur-height", height)
     tmux_run("detach-client")
-    open_popup_with_retry(target)
+    open_popup_with_retry(name, base, target)
 
 
 def menu() -> None:
-    if current_session() == SESSION:
+    _, _, inside = float_context()
+    if inside:
         items = [
             "size down", "-", f'run-shell "{script_cmd("zoom", "in")}"',
             "size up", "+", f'run-shell "{script_cmd("zoom", "out")}"',

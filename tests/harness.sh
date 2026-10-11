@@ -39,8 +39,16 @@ clients()  { "$TMUX_BIN" -L "$SOCK" list-clients -F '#{client_session}' 2>/dev/n
 sessions() { "$TMUX_BIN" -L "$SOCK" list-sessions -F '#{session_name}' 2>/dev/null; }
 
 start_server() {
+    local conf="${1:-$CONF}"
     "$TMUX_BIN" -L "$SOCK" kill-server 2>/dev/null
-    "$TMUX_BIN" -L "$SOCK" -f "$CONF" new-session -d -s main
+    # Wait for the old server to fully exit: it unlinks the socket on the way
+    # out, and racing a fresh server against that stomps the new socket.
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+        "$TMUX_BIN" -L "$SOCK" has-session 2>/dev/null || break
+        sleep 0.2
+    done
+    "$TMUX_BIN" -L "$SOCK" -f "$conf" new-session -d -s main
 }
 
 # ── phase 1: toggle open, toggle close, session persists ──────────────────
@@ -83,6 +91,49 @@ clients | grep -qx perch && ok "float opens (held-Ctrl phase)" || bad "float ope
 
 sleep 2.8
 clients | grep -qx perch && bad "held-Ctrl chord (C-a C-p) toggles the float" || ok "held-Ctrl chord (C-a C-p) toggles the float"
+
+# ── phase 4: per-session floats are independent ───────────────────────────
+CONF_PS="$(mktemp)"
+{ cat "$CONF"; printf 'set -g @perch-per-session on\n'; } > "$CONF_PS"
+start_server "$CONF_PS"
+"$TMUX_BIN" -L "$SOCK" new-session -d -s beta -c /tmp
+( sleep 1; printf '\001p'; sleep 2.5; printf '\001p'; sleep 2.5; printf '\001p'; sleep 2 ) | \
+    script -q /dev/null "$TMUX_BIN" -L "$SOCK" attach -t main >"$LOG" 2>&1 &
+
+sleep 2.5
+clients | grep -qx perch-main && ok "per-session: 'main' gets its own float" || bad "per-session: 'main' gets its own float"
+
+sleep 2.3
+outer_tty="$("$TMUX_BIN" -L "$SOCK" list-clients -F '#{client_tty} #{client_session}' | awk '$2=="main"{print $1; exit}')"
+if [ -n "$outer_tty" ]; then "$TMUX_BIN" -L "$SOCK" switch-client -c "$outer_tty" -t beta; fi
+
+sleep 2.7
+clients | grep -qx perch-beta && ok "per-session: 'beta' gets a separate float" || bad "per-session: 'beta' gets a separate float"
+sessions | grep -qx 'perch-main' && ok "per-session: 'main' float persists alongside" || bad "per-session: 'main' float persists alongside"
+
+sleep 2
+
+# ── phase 5: orphaned per-session floats are garbage-collected ────────────
+start_server "$CONF_PS"
+"$TMUX_BIN" -L "$SOCK" new-session -d -s beta -c /tmp
+( sleep 2; printf '\001p'; sleep 2; printf '\001p'; sleep 2.5; printf '\001p'; sleep 2 ) | \
+    script -q /dev/null "$TMUX_BIN" -L "$SOCK" attach -t main >"$LOG" 2>&1 &
+
+sleep 1.2
+outer_tty="$("$TMUX_BIN" -L "$SOCK" list-clients -F '#{client_tty} #{client_session}' | awk '$2=="main"{print $1; exit}')"
+if [ -n "$outer_tty" ]; then "$TMUX_BIN" -L "$SOCK" switch-client -c "$outer_tty" -t beta; fi
+
+sleep 2.3
+clients | grep -qx perch-beta && ok "gc: beta float is open" || bad "gc: beta float is open"
+
+sleep 2.0
+outer_tty="$("$TMUX_BIN" -L "$SOCK" list-clients -F '#{client_tty} #{client_session}' | awk '$2=="beta"{print $1; exit}')"
+if [ -n "$outer_tty" ]; then "$TMUX_BIN" -L "$SOCK" switch-client -c "$outer_tty" -t main; fi
+"$TMUX_BIN" -L "$SOCK" kill-session -t beta
+
+sleep 3.2
+clients | grep -qx perch-main && ok "gc: toggle from 'main' opens its float" || bad "gc: toggle from 'main' opens its float"
+sessions | grep -qx 'perch-beta' && bad "gc: orphaned 'perch-beta' was removed" || ok "gc: orphaned 'perch-beta' was removed"
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

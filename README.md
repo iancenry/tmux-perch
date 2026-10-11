@@ -47,6 +47,7 @@ Then reload (`prefix + r`) or restart tmux.
 | `@perch-bind` | `p` | prefix key that toggles the float |
 | `@perch-bind-menu` | `P` | prefix key that opens the menu |
 | `@perch-bind-ctrl` | `on` | also bind the Ctrl-variant (e.g. `C-p`) of single-char keys — holding Ctrl through the chord still toggles. Takes `C-p` from `previous-window` (tmux-sensible); set `off` to keep the stock binding. |
+| `@perch-per-session` | `off` | one independent float per base session (named `perch-<session>`) instead of a single shared one. Orphaned floats are garbage-collected on the next toggle. |
 | `@perch-session` | `perch` | name of the persistent scratch session |
 | `@perch-width` / `@perch-height` | `80%` | default float size (percent or cells) |
 | `@perch-border-color` | `magenta` | popup border colour |
@@ -75,6 +76,10 @@ Then reload (`prefix + r`) or restart tmux.
   Ctrl-variant (`C-p`), because holding Ctrl through the chord delivers
   Ctrl+P — which tmux-sensible maps to `previous-window` ("No previous
   window" if the session has one window).
+- **Per-session floats** (`@perch-per-session on`): every base session gets
+  its own float (`perch-<session>`), marked via the `@perch-float-base`
+  session option, so "am I inside a float?" is answered precisely rather
+  than by name-matching. Orphaned floats are collected lazily on toggle.
 - **Quiet on success.** The load shim always exits 0; successful runs print
   nothing.
 
@@ -86,8 +91,9 @@ tests/harness.sh
 
 Spins a throwaway tmux server, drives a real client through a pty with
 `script(1)`, and asserts: toggle opens/closes the float, the session
-persists, and the menu full-screen re-opens the popup (the floax
-regression).
+persists, the menu full-screen re-opens the popup (the floax regression),
+held-Ctrl chords toggle, and per-session floats are independent with
+orphaned ones garbage-collected.
 
 For hands-on testing, run the playground from a fresh terminal (not inside
 tmux) — it starts a throwaway server with perch loaded:
