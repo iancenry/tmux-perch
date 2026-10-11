@@ -48,4 +48,20 @@ bind_key() {
 bind_key "$toggle_key" toggle
 bind_key "$menu_key" menu
 
+# Per-session floats die with their base session: when any session closes,
+# run the garbage collector immediately (it is a no-op unless
+# @perch-per-session is on, and when a float is collected the extra pass it
+# triggers finds nothing to do).
+# Per-session floats die with their base session: when any session closes,
+# run the garbage collector immediately (it is a no-op unless
+# @perch-per-session is on, and when a float is collected the extra pass it
+# triggers finds nothing to do).
+#
+# -b (background) is essential: a foreground run-shell job makes the server
+# wait for it during shutdown, and the server's late cleanup then unlinks
+# the socket path. If a new server has already rebound that path (fast
+# kill-server + restart), the new server dies when its socket vanishes
+# ("server exited unexpectedly"). Backgrounded jobs do not delay shutdown.
+tmux set-hook -g session-closed "run-shell -b \"python3 '$PERCH' gc 2>/dev/null || true\""
+
 exit 0

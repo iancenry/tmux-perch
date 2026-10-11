@@ -80,7 +80,9 @@ Then reload (`prefix + r`) or restart tmux.
 - **Per-session floats** (`@perch-per-session on`): every base session gets
   its own float (`perch-<session>`), marked via the `@perch-float-base`
   session option, so "am I inside a float?" is answered precisely rather
-  than by name-matching. Orphaned floats are collected lazily on toggle.
+  than by name-matching. Orphaned floats are collected lazily on toggle, and
+  immediately when their base session closes (a `session-closed` hook runs
+  the collector).
 - **Project label in the title.** The float title shows the git repo (or
   directory) name of where you triggered it, e.g. `🐦 dotfiles` — display
   only; session identity remains `perch-<session>` since project names are

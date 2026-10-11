@@ -153,5 +153,15 @@ else
     bad "two clients: popup targets the second client"
 fi
 
+# ── phase 7: killing the base session kills its float immediately ──────────
+start_server "$CONF_PS"
+"$TMUX_BIN" -L "$SOCK" new-session -d -s beta -c /tmp
+( sleep 1; printf '\001p'; sleep 5 ) | script -q /dev/null "$TMUX_BIN" -L "$SOCK" attach -t beta >"$LOG" 2>&1 &
+sleep 2.5
+clients | grep -qx perch-beta && ok "kill parent: float is open" || bad "kill parent: float is open"
+"$TMUX_BIN" -L "$SOCK" kill-session -t beta
+sleep 1.5
+sessions | grep -qx 'perch-beta' && bad "kill parent: float cleaned up immediately" || ok "kill parent: float cleaned up immediately"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

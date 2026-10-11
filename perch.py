@@ -394,9 +394,12 @@ def main(argv: list[str]) -> int:
             zoom(direction, tty)
         elif command == "close":
             close(tty)
+        elif command == "gc":
+            gc_orphans()
         else:
             name = os.path.basename(SELF)
-            print(f"usage: {name} {{toggle|menu|zoom {{in|out|full|reset}}|close}}",
+            print(f"usage: {name} "
+                  "{toggle|menu|zoom {in|out|full|reset}|close|gc}",
                   file=sys.stderr)
             return 2
     except Exception as exc:
