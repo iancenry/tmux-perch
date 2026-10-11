@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# perch end-to-end harness.
+#
+# Spins a throwaway tmux server on its own socket, drives a real client
+# through a pty (utilising script(1)), and asserts on observable state via
+# list-clients / list-sessions.
+#
+# Usage: tests/harness.sh [tmux-binary]
+
+set -u
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMUX_BIN="${1:-${TMUX_BIN:-tmux}}"
+SOCK="perch-harness-$$"
+CONF="$(mktemp)"
+LOG="$(mktemp)"
+
+pass=0
+fail=0
+ok()  { printf 'PASS  %s\n' "$1"; pass=$((pass + 1)); }
+bad() { printf 'FAIL  %s\n' "$1"; fail=$((fail + 1)); }
+
+cleanup() {
+    "$TMUX_BIN" -L "$SOCK" kill-server 2>/dev/null
+    rm -f "$CONF" "$LOG"
+}
+trap cleanup EXIT
+
+command -v script >/dev/null 2>&1 || { echo "script(1) is required"; exit 1; }
+
+cat > "$CONF" <<EOF
+set -g prefix C-a
+set -g @perch-bind p
+run-shell "$HERE/perch.tmux"
+EOF
+
+clients()  { "$TMUX_BIN" -L "$SOCK" list-clients -F '#{client_session}' 2>/dev/null; }
+sessions() { "$TMUX_BIN" -L "$SOCK" list-sessions -F '#{session_name}' 2>/dev/null; }
+
+"$TMUX_BIN" -L "$SOCK" -f "$CONF" new-session -d -s main
+
+# ── phase 1: toggle open, toggle close, session persists ──────────────────
+( sleep 1; printf '\001p'; sleep 2.5; printf '\001p'; sleep 1.5 ) | \
+    script -q /dev/null "$TMUX_BIN" -L "$SOCK" attach -t main >"$LOG" 2>&1 &
+
+sleep 1.8
+clients | grep -qx perch && ok "toggle opens the float" || bad "toggle opens the float"
+
+sleep 2.5
+clients | grep -qx perch && bad "toggle closes the float" || ok "toggle closes the float"
+sessions | grep -qx perch && ok "session persists after close" || bad "session persists after close"
+
+sleep 2
+
+# ── phase 2: menu full-screen must re-open the popup (floax regression) ───
+( sleep 1; printf '\001p'; sleep 2; printf '\001P'; sleep 1.2; printf 'f'; sleep 2.5 ) | \
+    script -q /dev/null "$TMUX_BIN" -L "$SOCK" attach -t main >"$LOG" 2>&1 &
+
+sleep 1.8
+clients | grep -qx perch && ok "float open before menu" || bad "float open before menu"
+
+sleep 3.8
+clients | grep -qx perch && ok "menu full-screen re-opens the popup" || bad "menu full-screen re-opens the popup"
+
+printf '\n%d passed, %d failed\n' "$pass" "$fail"
+[ "$fail" -eq 0 ]
