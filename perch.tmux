@@ -33,14 +33,14 @@ fi
 bind_key() {
     local key="$1" action="$2"
     [ -n "$key" ] || return 0
-    tmux bind-key "$key" run-shell "python3 '$PERCH' $action"
+    tmux bind-key "$key" run-shell "python3 '$PERCH' $action '#{client_tty}'"
     # Hold-Ctrl friendliness: pressing "prefix then p" with Ctrl held down
     # delivers Ctrl+P, which tmux-sensible binds to previous-window. Also
     # register the Ctrl-variant of single-character keys so the chord works
     # whether or not Ctrl is released between the two keys.
     if [ "$bind_ctrl" = "on" ]; then
         case "$key" in
-            ?) tmux bind-key "C-$key" run-shell "python3 '$PERCH' $action" ;;
+            ?) tmux bind-key "C-$key" run-shell "python3 '$PERCH' $action '#{client_tty}'" ;;
         esac
     fi
 }

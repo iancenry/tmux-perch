@@ -116,12 +116,27 @@ def script_cmd(*args: str) -> str:
     return "python3 " + " ".join(shlex.quote(a) for a in (SELF, *args))
 
 
+def script_cmd_tty(*args: str) -> str:
+    """Like script_cmd, but appends '#{client_tty}': tmux expands it when the
+    command runs, so the action knows which client triggered it."""
+    return script_cmd(*args) + " '#{client_tty}'"
+
+
 def notify(message: str) -> None:
     tmux_run("display-message", f"perch: {message}")
 
 
-def current_session() -> str:
-    return tmux("display", "-p", "#{session_name}")
+def display_for(tty: str | None, fmt: str) -> str:
+    """Evaluate a format in a specific client's context when possible."""
+    if tty:
+        out = tmux("display-message", "-c", tty, "-p", fmt)
+        if out:
+            return out
+    return tmux("display", "-p", fmt)
+
+
+def current_session(tty: str | None = None) -> str:
+    return display_for(tty, "#{session_name}")
 
 
 def session_exists(name: str) -> bool:
@@ -138,15 +153,31 @@ def outer_client(float_name: str) -> str | None:
     return None
 
 
+def outer_of_float(float_name: str) -> str | None:
+    """The client displaying the base session this float belongs to (falls
+    back to any client not on the float)."""
+    base = session_option(float_name, FLOAT_MARKER)
+    listing = tmux("list-clients", "-F", "#{client_tty} #{client_session}")
+    pairs = [line.split() for line in listing.splitlines() if line.strip()]
+    if base:
+        for tty, sess in pairs:
+            if sess == base:
+                return tty
+    for tty, sess in pairs:
+        if sess != float_name:
+            return tty
+    return None
+
+
 # ── float resolution (shared vs per-session) ───────────────────────────────
 
 def float_for(base: str) -> str:
     return f"{FLOAT_NAME}-{base}"
 
 
-def float_context() -> tuple[str, str | None, bool]:
+def float_context(tty: str | None = None) -> tuple[str, str | None, bool]:
     """(float session name, base session, already inside the float)."""
-    cur = current_session()
+    cur = current_session(tty)
     if PER_SESSION != "on":
         return FLOAT_NAME, None, cur == FLOAT_NAME
     base = session_option(cur, FLOAT_MARKER)
@@ -251,7 +282,7 @@ def bind_hotkeys() -> None:
     if HOTKEYS != "on":
         return
     for key, args in HOTKEY_ACTIONS.items():
-        tmux_run("bind-key", "-n", key, "run-shell", script_cmd(*args))
+        tmux_run("bind-key", "-n", key, "run-shell", script_cmd_tty(*args))
 
 
 def unbind_hotkeys() -> None:
@@ -261,29 +292,36 @@ def unbind_hotkeys() -> None:
 
 # ── commands ───────────────────────────────────────────────────────────────
 
-def toggle() -> None:
-    cur = current_session()
-    name, base, inside = float_context()
+def detach_current(tty: str | None) -> None:
+    if tty:
+        tmux_run("detach-client", "-t", tty)
+    else:
+        tmux_run("detach-client")
+
+
+def toggle(tty: str | None = None) -> None:
+    cur = current_session(tty)
+    name, base, inside = float_context(tty)
     if inside:
         unbind_hotkeys()
-        tmux_run("detach-client")
+        detach_current(tty)
         return
 
-    path = tmux("display", "-p", "#{pane_current_path}")
+    path = display_for(tty, "#{pane_current_path}")
     label = project_label(path, cur)
     set_opt("@perch-origin", cur)
     gc_orphans()
     ensure_session(name, path, base, label)
     follow_path(name, path)
     bind_hotkeys()
-    open_popup_with_retry(name, label, outer_client(name))
+    open_popup_with_retry(name, label, tty or outer_client(name))
 
 
-def close() -> None:
-    _, _, inside = float_context()
+def close(tty: str | None = None) -> None:
+    _, _, inside = float_context(tty)
     if inside:
         unbind_hotkeys()
-        tmux_run("detach-client")
+        detach_current(tty)
 
 
 def step_percent(value: str, delta: int) -> str:
@@ -295,18 +333,18 @@ def step_percent(value: str, delta: int) -> str:
     return f"{n}%"
 
 
-def zoom(direction: str) -> None:
+def zoom(direction: str, tty: str | None = None) -> None:
     if direction not in ("in", "out", "full", "reset"):
         notify(f"unknown zoom direction: {direction}")
         return
-    name, base, inside = float_context()
+    name, base, inside = float_context(tty)
     if not inside:
         notify("open the float first")
         return
 
     # Capture the outer client BEFORE detaching: the popup's own client is
     # gone afterwards, and a re-open without an explicit target fails.
-    target = outer_client(name)
+    target = outer_of_float(name)
     label = session_option(name, "@perch-float-label") or base or "perch"
 
     if direction == "full":
@@ -320,38 +358,42 @@ def zoom(direction: str) -> None:
 
     set_opt("@perch-cur-width", width)
     set_opt("@perch-cur-height", height)
-    tmux_run("detach-client")
+    detach_current(tty)
     open_popup_with_retry(name, label, target)
 
 
-def menu() -> None:
-    _, _, inside = float_context()
+def menu(tty: str | None = None) -> None:
+    _, _, inside = float_context(tty)
     if inside:
         items = [
-            "size down", "-", f'run-shell "{script_cmd("zoom", "in")}"',
-            "size up", "+", f'run-shell "{script_cmd("zoom", "out")}"',
-            "full screen", "f", f'run-shell "{script_cmd("zoom", "full")}"',
-            "reset size", "r", f'run-shell "{script_cmd("zoom", "reset")}"',
-            "close float", "q", f'run-shell "{script_cmd("close")}"',
+            "size down", "-", f'run-shell "{script_cmd_tty("zoom", "in")}"',
+            "size up", "+", f'run-shell "{script_cmd_tty("zoom", "out")}"',
+            "full screen", "f", f'run-shell "{script_cmd_tty("zoom", "full")}"',
+            "reset size", "r", f'run-shell "{script_cmd_tty("zoom", "reset")}"',
+            "close float", "q", f'run-shell "{script_cmd_tty("close")}"',
         ]
     else:
         items = [
-            "open float", "o", f'run-shell "{script_cmd("toggle")}"',
+            "open float", "o", f'run-shell "{script_cmd_tty("toggle")}"',
         ]
     tmux_run("menu", "-T", " perch ", *items)
 
 
 def main(argv: list[str]) -> int:
     command = argv[0] if argv else "toggle"
+    rest = argv[1:]
+    tty = next((a for a in rest if a.startswith("/")), None)
+    direction = next((a for a in rest if a in ("in", "out", "full", "reset")),
+                     "reset")
     try:
         if command == "toggle":
-            toggle()
+            toggle(tty)
         elif command == "menu":
-            menu()
+            menu(tty)
         elif command == "zoom":
-            zoom(argv[1] if len(argv) > 1 else "reset")
+            zoom(direction, tty)
         elif command == "close":
-            close()
+            close(tty)
         else:
             name = os.path.basename(SELF)
             print(f"usage: {name} {{toggle|menu|zoom {{in|out|full|reset}}|close}}",

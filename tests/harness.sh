@@ -137,5 +137,21 @@ sleep 3.2
 clients | grep -qx perch-main && ok "gc: toggle from 'main' opens its float" || bad "gc: toggle from 'main' opens its float"
 sessions | grep -qx 'perch-beta' && bad "gc: orphaned 'perch-beta' was removed" || ok "gc: orphaned 'perch-beta' was removed"
 
+# ── phase 6: toggling from a second client targets that client ────────────
+start_server "$CONF_PS"
+"$TMUX_BIN" -L "$SOCK" new-session -d -s beta -c /tmp
+( sleep 1; printf '\001p'; sleep 5 ) | script -q /dev/null "$TMUX_BIN" -L "$SOCK" attach -t main >"$LOG" 2>&1 &
+sleep 1.5
+( sleep 1; printf '\001p'; sleep 4 ) | script -q /dev/null "$TMUX_BIN" -L "$SOCK" attach -t beta >"$LOG" 2>&1 &
+sleep 2.7
+tty2="$("$TMUX_BIN" -L "$SOCK" list-clients -F '#{client_tty} #{client_session}' | awk '$2=="beta"{print $1; exit}')"
+clients | grep -qx perch-main && ok "two clients: first float stays attached" || bad "two clients: first float stays attached"
+clients | grep -qx perch-beta && ok "two clients: second float opens" || bad "two clients: second float opens"
+if "$TMUX_BIN" -L "$SOCK" show-messages 2>/dev/null | grep -m1 'display-popup' | grep -q -- "-c $tty2.*perch-beta"; then
+    ok "two clients: popup targets the second client"
+else
+    bad "two clients: popup targets the second client"
+fi
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
